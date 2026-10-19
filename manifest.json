@@ -1,0 +1,61 @@
+{
+  "manifest_version": 1,
+  "id": "cn.ucbk.github",
+  "name": "GitHub 订阅与解析",
+  "version": "1.0.0",
+  "description": "在群聊或私聊里贴 GitHub 仓库 / Issue / PR / Release 链接，机器人直接回解析信息；也可以订阅仓库，有新 Release、新提交或新 Issue/PR 时主动推送到群。\n\n用法：\n1. 默认「粘贴链接即解析」，消息里带 github.com 链接就会回仓库/Issue/PR 信息；\n2. 订阅仓库：发送「gh sub owner/repo」；取消订阅「gh unsub owner/repo」；查看已订阅「gh list」；\n3. 订阅后机器人按间隔轮询，发现更新就发到订阅时所在的群或私聊；\n4. 可选填 GitHub Token 提高 API 限流额度，不填也能用（匿名 60 次/小时）。\n\n出网域名：api.github.com、github.com、uploads.github.com。图片与文件由 NapCat 自行拉取，不经过本插件出网。",
+  "author": {
+    "name": "UCBK",
+    "url": "https://www.ucbk.cn"
+  },
+  "license": "MIT",
+  "homepage": "https://www.ucbk.cn",
+  "entry": "plugin.py",
+  "capabilities": [
+    "msg.send",
+    "http.outbound"
+  ],
+  "allowed_domains": [
+    "api.github.com",
+    "github.com",
+    "uploads.github.com"
+  ],
+  "config_schema": [
+    {
+      "key": "reply_scope",
+      "label": "生效范围",
+      "type": "select",
+      "required": false,
+      "sensitive": false,
+      "options": ["群聊与私聊", "仅群聊", "仅私聊"]
+    },
+    {
+      "key": "trigger_prefix",
+      "label": "指令前缀（订阅相关命令用）",
+      "type": "text",
+      "required": false,
+      "sensitive": false
+    },
+    {
+      "key": "github_token",
+      "label": "GitHub Token（可选，提高限流额度）",
+      "type": "password",
+      "required": false,
+      "sensitive": true
+    },
+    {
+      "key": "poll_interval",
+      "label": "订阅轮询间隔（秒，默认 300）",
+      "type": "number",
+      "required": false,
+      "sensitive": false
+    },
+    {
+      "key": "max_notify_per_poll",
+      "label": "每次轮询最多推送的更新条数（默认 5）",
+      "type": "number",
+      "required": false,
+      "sensitive": false
+    }
+  ]
+}
