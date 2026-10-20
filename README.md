@@ -34,7 +34,7 @@ github-plugin/
 
 ```bash
 cd /path/to/插件目录
-git clone https://github.com/你的账号/github-plugin.git github-plugin
+git clone https://github.com/ovonull/github-plugin.git github-plugin
 ```
 
 进入插件目录拉取更新：
