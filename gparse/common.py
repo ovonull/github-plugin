@@ -8,23 +8,21 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
-from urllib.parse import urlparse
 
 
 API_BASE = "https://api.github.com"
 
-# GitHub 链接识别：仓库、Issue、PR、Release、Commit。
+# GitHub 链接识别：仓库、Issue、PR。
+# 仓库名后的边界要允许 / ? # 空白或结尾，才能兼容 "xxx.git 装一下" 这类带尾文的粘贴。
 GH_REPO = re.compile(
-    r"github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)(?:\.git)?(?:/|$)", re.IGNORECASE
+    r"github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+?)(?:\.git)?(?=[/?#\s]|$)",
+    re.IGNORECASE,
 )
 GH_ISSUE = re.compile(
     r"github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(?:issues|pull)/(\d+)",
-    re.IGNORECASE,
-)
-GH_RELEASE = re.compile(
-    r"github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/releases?(?:/|$)",
     re.IGNORECASE,
 )
 
@@ -50,13 +48,14 @@ def find_github_target(text: str) -> dict[str, Any] | None:
     m = GH_ISSUE.search(content)
     if m:
         return {
-            "kind": "pull" if "/pull/" in m.group(0).lower() else "issue",
+            "kind": "pr" if "/pull/" in m.group(0).lower() else "issue",
             "owner": m.group(1),
             "repo": m.group(2),
             "number": int(m.group(3)),
         }
     m = GH_REPO.search(content)
     if m:
+        # 正则里的 (?:\.git)? 已把克隆地址后缀剥离，这里拿到的是仓库名本身。
         return {"kind": "repo", "owner": m.group(1), "repo": m.group(2)}
     return None
 
@@ -70,7 +69,7 @@ def status_of(result: dict[str, Any]) -> int:
 
 
 def json_of(result: dict[str, Any]) -> dict[str, Any]:
-    """从出网结果里取 JSON，取不到时回退到解析 text。"""
+    """从出网结果里取 JSON 对象，取不到时回退到解析 text。"""
     payload = result.get("json")
     if isinstance(payload, dict):
         return payload
@@ -78,20 +77,25 @@ def json_of(result: dict[str, Any]) -> dict[str, Any]:
     if not text:
         return {}
     try:
-        import json
-
         loaded = json.loads(text)
     except ValueError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
 
-def headers_of(result: dict[str, Any]) -> dict[str, str]:
-    """取响应头，统一转小写键。"""
-    raw = result.get("headers")
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k).lower(): str(v) for k, v in raw.items()}
+def json_list_of(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """从出网结果里取 JSON 数组，取不到时回退到解析 text。"""
+    payload = result.get("json")
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    text = str(result.get("text") or "")
+    if not text:
+        return []
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        return []
+    return [item for item in loaded if isinstance(item, dict)] if isinstance(loaded, list) else []
 
 
 def clip(text: str, limit: int) -> str:
@@ -100,14 +104,6 @@ def clip(text: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: max(1, limit - 1)] + "…"
-
-
-def host_of(url: str) -> str:
-    """取链接域名（小写）。"""
-    try:
-        return (urlparse(str(url or "")).hostname or "").lower()
-    except ValueError:
-        return ""
 
 
 def api_headers(token: str) -> dict[str, str]:

@@ -4,7 +4,7 @@ GitHub API 调用与订阅存储。
 设计说明：
 - 只读查询（仓库 / Issue / PR / Release / Commit）都走 host.http_request；
 - 订阅用本地 JSON 文件持久化（原子写：先写 .tmp 再改名），不依赖宿主存储；
-- 轮询比较「上次见到的 tag / commit sha / issue 号」，有变化才推送。
+- 轮询比较「上次见到的 tag / commit sha / issue / PR 编号」，有变化才推送。
 """
 
 from __future__ import annotations
@@ -58,7 +58,8 @@ async def fetch_issue(
     if status != 200:
         raise GitHubError(f"没有找到 #{number}", "确认编号是否存在，私有仓库需要 Token")
     data = common.json_of(res)
-    is_pr = bool(data.get("pull_request"))
+    # 用「字段是否存在」判断是否 PR：空对象 {} 也是 PR，不能用真值判断。
+    is_pr = "pull_request" in data
     return {
         "kind": "pr" if is_pr else "issue",
         "number": number,
@@ -95,8 +96,8 @@ async def fetch_latest_commit(
     res = await _get(host, f"/repos/{owner}/{repo}/commits?per_page=1", token)
     if common.status_of(res) != 200:
         return None
-    data = common.json_of(res)
-    if not isinstance(data, list) or not data:
+    data = common.json_list_of(res)
+    if not data:
         return None
     commit = data[0].get("commit") or {}
     return {
@@ -105,6 +106,32 @@ async def fetch_latest_commit(
         "author": (commit.get("author") or {}).get("name") or "",
         "html_url": data[0].get("html_url") or "",
     }
+
+
+async def fetch_latest_issues(
+    host: Any, owner: str, repo: str, token: str
+) -> list[dict[str, Any]]:
+    """取最近的 Issue/PR，用于发现订阅后的新项目活动。"""
+    res = await _get(
+        host,
+        f"/repos/{owner}/{repo}/issues?state=all&sort=created&direction=desc&per_page=30",
+        token,
+    )
+    if common.status_of(res) != 200:
+        return []
+    items = []
+    for data in common.json_list_of(res):
+        item = {
+            "number": int(data.get("number") or 0),
+            "kind": "pr" if "pull_request" in data else "issue",
+            "title": data.get("title") or "",
+            "user": (data.get("user") or {}).get("login") or "",
+            "html_url": data.get("html_url") or "",
+            "created_at": data.get("created_at") or "",
+        }
+        if item["number"]:
+            items.append(item)
+    return items
 
 
 def format_repo_card(r: dict[str, Any]) -> str:
@@ -131,7 +158,6 @@ def format_repo_card(r: dict[str, Any]) -> str:
 def format_issue_card(i: dict[str, Any]) -> str:
     """拼 Issue / PR 描述卡片。"""
     tag = "PR" if i["kind"] == "pr" else "Issue"
-    lines = [f"【GitHub {tag}】{i['full_name'] if 'full_name' in i else ''}#{i['number']}"]
     lines = [f"【GitHub {tag}】#{i['number']} {i['title']}"]
     meta = [i["state"]]
     if i["user"]:
@@ -187,6 +213,7 @@ class SubscriptionStore:
                 "targets": [],
                 "last_release": "",
                 "last_commit": "",
+                "last_issue": 0,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             data[k] = entry
@@ -233,7 +260,14 @@ class SubscriptionStore:
         """列出全部订阅（轮询用）。"""
         return list(self._load().values())
 
-    def update_marks(self, owner: str, repo: str, release: str, commit: str) -> None:
+    def update_marks(
+        self,
+        owner: str,
+        repo: str,
+        release: str = "",
+        commit: str = "",
+        issue: int = 0,
+    ) -> None:
         """轮询后更新该仓库的上次见到标记。"""
         data = self._load()
         k = self.key(owner, repo)
@@ -244,4 +278,6 @@ class SubscriptionStore:
             entry["last_release"] = release
         if commit:
             entry["last_commit"] = commit
+        if issue:
+            entry["last_issue"] = max(int(entry.get("last_issue") or 0), int(issue))
         self._save()

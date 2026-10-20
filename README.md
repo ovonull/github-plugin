@@ -5,7 +5,7 @@
 ## 功能特性
 
 - 贴 GitHub 仓库 / Issue / PR 链接，机器人直接回解析卡片
-- 订阅仓库：`gh sub owner/repo`，有新 Release 或新提交时推送到订阅所在的群或私聊
+- 订阅仓库：`gh sub owner/repo`，有新 Release、新提交或新 Issue/PR 时推送到订阅所在的群或私聊
 - 取消订阅：`gh unsub owner/repo`；查看订阅：`gh list`
 - 支持同时订阅多个仓库、多个会话（群 / 私聊）独立接收
 - 可选填 GitHub Token 提高 API 限流额度；不填也能用（匿名 60 次/小时）

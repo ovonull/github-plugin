@@ -4,7 +4,7 @@ GitHub 订阅与解析插件。
 功能：
 1. 群里或私聊里贴 github.com 链接（仓库 / Issue / PR），机器人回一条解析卡片；
 2. 发送「gh sub owner/repo」订阅仓库，「gh unsub owner/repo」取消，「gh list」查看；
-3. 后台按间隔轮询订阅仓库，有新 Release 或新提交时主动推送到订阅所在的群或私聊。
+3. 后台按间隔轮询订阅仓库，有新 Release、新提交或新 Issue/PR 时主动推送到订阅所在的群或私聊。
 
 约定：
 - 出网一律走 host.http_request，域名受清单白名单约束；
@@ -33,8 +33,7 @@ DEFAULT_POLL = 300
 DEFAULT_MAX_NOTIFY = 5
 MAX_TITLE_LENGTH = 80
 
-# 模块级宿主句柄：后台轮询循环复用首次事件拿到的 host。
-_host: Any = None
+# 后台轮询循环在宿主里只启动一次，用这个开关记住。
 _poller_started = False
 
 # 仓库坐标：owner/repo
@@ -155,7 +154,7 @@ async def _handle_command(
             await _safe_reply(host, event, "用法：gh sub owner/repo", "指令提示")
             return True
         is_new = store.subscribe(m.group(1), m.group(2), target)
-        # 立即校准一次标记，避免下一轮轮询把历史 Release 当新消息。
+        # 立即校准一次标记，避免下一轮轮询把历史 Release/提交/Issue 当新消息。
         await _calibrate(host, store, m.group(1), m.group(2), target)
         msg = f"已订阅 {m.group(1)}/{m.group(2)}" + ("" if is_new else "（追加到当前会话）")
         await _safe_reply(host, event, msg, "订阅成功")
@@ -200,10 +199,16 @@ async def _calibrate(
     try:
         rel = await github.fetch_latest_release(host, owner, repo, token)
         com = await github.fetch_latest_commit(host, owner, repo, token)
+        issues = await github.fetch_latest_issues(host, owner, repo, token)
     except PluginCallError:
         return
+    max_issue = max((int(it.get("number") or 0) for it in issues), default=0)
     store.update_marks(
-        owner, repo, rel["tag"] if rel else "", com["sha"] if com else ""
+        owner,
+        repo,
+        rel["tag"] if rel else "",
+        com["sha"] if com else "",
+        max_issue,
     )
 
 
@@ -232,6 +237,7 @@ async def _poll_once(host: Any) -> None:
         try:
             rel = await github.fetch_latest_release(host, owner, repo, token)
             com = await github.fetch_latest_commit(host, owner, repo, token)
+            issues = await github.fetch_latest_issues(host, owner, repo, token)
         except PluginCallError as error:
             host.log(f"轮询 {owner}/{repo} 失败：{error}", "warning")
             continue
@@ -247,10 +253,27 @@ async def _poll_once(host: Any) -> None:
                 f" — {com['author']}\n{com['html_url']}"
             )
 
+        last_issue = int(entry.get("last_issue") or 0)
+        new_issues = [item for item in issues if item["number"] > last_issue]
+        for item in reversed(new_issues):
+            tag = "新 PR" if item["kind"] == "pr" else "新 Issue"
+            updates.append(
+                f"【{tag}】{owner}/{repo}#{item['number']}\n"
+                f"{common.clip(item['title'], MAX_TITLE_LENGTH)}"
+                f" — @{item['user']}\n{item['html_url']}"
+            )
+
+        max_issue = max((int(it.get("number") or 0) for it in issues), default=0)
         store.update_marks(
-            owner, repo, rel["tag"] if rel else "", com["sha"] if com else ""
+            owner,
+            repo,
+            rel["tag"] if rel else "",
+            com["sha"] if com else "",
+            max_issue,
         )
         for text in updates:
+            if sent >= max_notify:
+                break
             for t in entry["targets"]:
                 if t["type"] == "group":
                     await _safe_reply(
@@ -285,8 +308,7 @@ async def _poll_loop(host: Any) -> None:
 
 def _ensure_poller(host: Any) -> None:
     """首次处理事件时启动后台轮询循环（只启一次）。"""
-    global _host, _poller_started
-    _host = host
+    global _poller_started
     if _poller_started:
         return
     _poller_started = True
@@ -301,8 +323,6 @@ def _ensure_poller(host: Any) -> None:
 @on_message
 async def handle_github(event: dict[str, Any], host: Any) -> None:
     """收到消息时判断是 GitHub 链接还是订阅指令。"""
-    global _host
-    _host = host
     if event.get("post_type") != "message":
         return
     if str(event.get("user_id")) == str(event.get("self_id")):
