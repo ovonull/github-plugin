@@ -1,5 +1,5 @@
 """
-GitHub API 调用与订阅存储。
+GitHub API 调用与卡片格式化。
 
 卡片内容对齐 SuInk/Diana 的 GitHub 解析行为（用 Python 重新实现）：
 - 仓库：名称 + 归档/Fork 标记 + 简介 + 星标/Fork/开放 Issue 数 + 语言 +
@@ -9,16 +9,13 @@ GitHub API 调用与订阅存储。
 - Release：只认官方 API 返回的数据，并核对返回地址与请求的仓库、版本一致。
 
 设计说明：
-- 只读查询（仓库 / Issue / PR / Release / Commit）都走 host.http_request；
-- 订阅用本地 JSON 文件持久化（原子写：先写 .tmp 再改名），不依赖宿主存储；
-- 轮询比较「上次见到的 tag / commit sha / issue / PR 编号」，有变化才推送。
+- 只读查询（仓库 / Issue / PR / Release / Commit / Star）都走 host.http_request；
+- 订阅与设置的持久化在 gparse/store.py，不放在这里。
 """
 
 from __future__ import annotations
 
 import json
-import os
-import time
 from typing import Any
 from urllib.parse import quote
 
@@ -289,6 +286,193 @@ async def fetch_latest_issues(
     return items
 
 
+async def fetch_commits(
+    host: Any, owner: str, repo: str, token: str, *, limit: int = 30
+) -> list[dict[str, Any]]:
+    """取最近的提交列表（新到旧）。"""
+    res = await _get(
+        host, f"/repos/{owner}/{repo}/commits?per_page={max(1, min(int(limit), 100))}", token
+    )
+    if common.status_of(res) != 200:
+        return []
+    items = []
+    for data in common.json_list_of(res):
+        commit = data.get("commit") or {}
+        author = commit.get("author") or {}
+        items.append(
+            {
+                "sha": str(data.get("sha") or "")[:7],
+                "full_sha": str(data.get("sha") or ""),
+                "message": (commit.get("message") or "").split("\n")[0],
+                "author": str(author.get("name") or ""),
+                "time": str(commit.get("author") or {}).get("date") or "",
+                "html_url": data.get("html_url") or "",
+            }
+        )
+    return items
+
+
+async def fetch_pulls(
+    host: Any, owner: str, repo: str, token: str, *, limit: int = 30
+) -> list[dict[str, Any]]:
+    """取最近的 PR 列表（新到旧）。"""
+    res = await _get(
+        host,
+        f"/repos/{owner}/{repo}/pulls?state=all&sort=created&direction=desc&per_page={max(1, min(int(limit), 100))}",
+        token,
+    )
+    if common.status_of(res) != 200:
+        return []
+    items = []
+    for data in common.json_list_of(res):
+        items.append(
+            {
+                "number": int(data.get("number") or 0),
+                "title": data.get("title") or "",
+                "state": data.get("state") or "",
+                "merged": bool(data.get("merged_at") or data.get("merged")),
+                "draft": bool(data.get("draft")),
+                "user": (data.get("user") or {}).get("login") or "",
+                "time": data.get("created_at") or "",
+                "head_ref": (data.get("head") or {}).get("ref") or "",
+                "base_ref": (data.get("base") or {}).get("ref") or "",
+                "html_url": data.get("html_url") or "",
+            }
+        )
+    return items
+
+
+async def fetch_releases(
+    host: Any, owner: str, repo: str, token: str, *, limit: int = 30
+) -> list[dict[str, Any]]:
+    """取最近的 Release 列表（新到旧）。"""
+    res = await _get(
+        host, f"/repos/{owner}/{repo}/releases?per_page={max(1, min(int(limit), 100))}", token
+    )
+    if common.status_of(res) != 200:
+        return []
+    items = []
+    for data in common.json_list_of(res):
+        if data.get("draft"):
+            continue
+        items.append(
+            {
+                "tag": data.get("tag_name") or "",
+                "name": data.get("name") or data.get("tag_name") or "",
+                "time": data.get("published_at") or "",
+                "prerelease": bool(data.get("prerelease")),
+                "html_url": data.get("html_url") or "",
+            }
+        )
+    return items
+
+
+async def fetch_star_events(
+    host: Any, owner: str, repo: str, token: str, *, limit: int = 30
+) -> list[dict[str, Any]]:
+    """
+    取最近的 Star 事件。
+
+    用 WatchEvent 判断有没有人 star，stargazers_count 只用来显示数字——
+    拿数字当触发器再去列表里倒推是谁，反推不准。
+    """
+    res = await _get(
+        host, f"/repos/{owner}/{repo}/events?per_page={max(1, min(int(limit), 100))}", token
+    )
+    if common.status_of(res) != 200:
+        return []
+    items = []
+    for data in common.json_list_of(res):
+        if str(data.get("type") or "") != "WatchEvent":
+            continue
+        payload = data.get("payload") or {}
+        if str(payload.get("action") or "").lower() != "started":
+            continue
+        login = str((data.get("actor") or {}).get("login") or "")
+        if not login:
+            continue
+        items.append(
+            {
+                "id": str(data.get("id") or ""),
+                "login": login,
+                "url": (data.get("actor") or {}).get("html_url") or "",
+                "time": data.get("created_at") or "",
+            }
+        )
+    return items
+
+
+async def fetch_stargazers_count(
+    host: Any, owner: str, repo: str, token: str
+) -> int:
+    """取仓库当前 Star 总数。"""
+    res = await _get(host, f"/repos/{owner}/{repo}", token)
+    if common.status_of(res) != 200:
+        return 0
+    return int(common.json_of(res).get("stargazers_count") or 0)
+
+
+async def fetch_repo_privacy(
+    host: Any, owner: str, repo: str, token: str
+) -> tuple[str, bool]:
+    """取仓库简介与是否私有，一次请求两样都有。"""
+    res = await _get(host, f"/repos/{owner}/{repo}", token)
+    if common.status_of(res) != 200:
+        return "", False
+    data = common.json_of(res)
+    return str(data.get("description") or "").strip(), bool(data.get("private"))
+
+
+async def fetch_account(host: Any, token: str) -> str:
+    """
+    用一条凭据查当前账号名。
+
+    用来验证凭据能不能用——匿名调用 /user 会返回 401，
+    带对 Token 才会返回账号信息。
+    """
+    res = await _get(host, "/user", token)
+    status = common.status_of(res)
+    if status == 401:
+        raise GitHubError("凭据无效或已过期", "重新生成 Token 后再试")
+    if status == 403:
+        raise GitHubError("凭据权限不足或触发了限流", "稍后再试，或换一个 Token")
+    if status != 200:
+        raise GitHubError(f"GitHub 返回 {status}", "稍后再试")
+    return str(common.json_of(res).get("login") or "")
+
+
+def render_template(template: str, values: dict[str, str]) -> str:
+    """
+    逐行替换占位符。
+
+    某一行里出现过占位符、而全部占位符都替换成空串时，这一行连同它的静态前缀
+    一起删除——作者缺失时不能留下一行光秃秃的「作者：」。没有占位符的静态行原样保留。
+    """
+    lines = []
+    for line in str(template or "").split("\n"):
+        replaced = line
+        saw_placeholder = False
+        saw_value = False
+        for key, value in values.items():
+            placeholder = "{" + key + "}"
+            if placeholder not in replaced:
+                continue
+            saw_placeholder = True
+            if str(value or "").strip():
+                saw_value = True
+            replaced = replaced.replace(placeholder, str(value or ""))
+        if saw_placeholder and not saw_value:
+            continue
+        if saw_placeholder:
+            while " ·  · " in replaced:
+                replaced = replaced.replace(" ·  · ", " · ")
+            replaced = replaced.strip(" \t·|-—、,，")
+        if not replaced.strip() and saw_placeholder:
+            continue
+        lines.append(replaced.strip())
+    return "\n".join(lines)
+
+
 def format_repo_card(r: dict[str, Any]) -> str:
     """拼仓库描述卡片。"""
     title = f"【GitHub】{r['full_name']}"
@@ -417,118 +601,3 @@ def format_release_card(r: dict[str, Any]) -> str:
         lines.append("")
         lines.append(body)
     return "\n".join(lines)
-
-
-class SubscriptionStore:
-    """订阅列表的本地持久化存储（JSON，原子写）。"""
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self._cache: dict[str, Any] | None = None
-
-    def _load(self) -> dict[str, Any]:
-        if self._cache is not None:
-            return self._cache
-        data: dict[str, Any] = {}
-        if os.path.exists(self.path):
-            try:
-                with open(self.path, "r", encoding="utf-8") as fh:
-                    loaded = json.load(fh)
-                if isinstance(loaded, dict):
-                    data = loaded
-            except (ValueError, OSError):
-                data = {}
-        self._cache = data
-        return data
-
-    def _save(self) -> None:
-        data = self._cache or {}
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
-
-    def key(self, owner: str, repo: str) -> str:
-        return f"{owner}/{repo}".lower()
-
-    def subscribe(self, owner: str, repo: str, target: dict[str, Any]) -> bool:
-        """添加一个订阅目标；已存在则追加目标，返回是否为新仓库。"""
-        data = self._load()
-        k = self.key(owner, repo)
-        entry = data.get(k)
-        is_new = entry is None
-        if entry is None:
-            entry = {
-                "owner": owner,
-                "repo": repo,
-                "targets": [],
-                "last_release": "",
-                "last_commit": "",
-                "last_issue": 0,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            data[k] = entry
-        for t in entry["targets"]:
-            if t.get("type") == target.get("type") and str(t.get("id")) == str(
-                target.get("id")
-            ):
-                return is_new
-        entry["targets"].append(target)
-        self._save()
-        return is_new
-
-    def unsubscribe(self, owner: str, repo: str, target: dict[str, Any]) -> bool:
-        """移除一个订阅目标；目标清空后删掉整个仓库订阅。返回是否还存在该仓库。"""
-        data = self._load()
-        k = self.key(owner, repo)
-        entry = data.get(k)
-        if not entry:
-            return False
-        entry["targets"] = [
-            t
-            for t in entry["targets"]
-            if not (t.get("type") == target.get("type") and str(t.get("id")) == str(target.get("id")))
-        ]
-        if not entry["targets"]:
-            del data[k]
-        self._save()
-        return k in data
-
-    def list_for(self, target: dict[str, Any]) -> list[dict[str, Any]]:
-        """列出某个会话（群/私聊）订阅的仓库。"""
-        data = self._load()
-        out = []
-        for entry in data.values():
-            if any(
-                t.get("type") == target.get("type")
-                and str(t.get("id")) == str(target.get("id"))
-                for t in entry["targets"]
-            ):
-                out.append(entry)
-        return out
-
-    def all(self) -> list[dict[str, Any]]:
-        """列出全部订阅（轮询用）。"""
-        return list(self._load().values())
-
-    def update_marks(
-        self,
-        owner: str,
-        repo: str,
-        release: str = "",
-        commit: str = "",
-        issue: int = 0,
-    ) -> None:
-        """轮询后更新该仓库的上次见到标记。"""
-        data = self._load()
-        k = self.key(owner, repo)
-        entry = data.get(k)
-        if not entry:
-            return
-        if release:
-            entry["last_release"] = release
-        if commit:
-            entry["last_commit"] = commit
-        if issue:
-            entry["last_issue"] = max(int(entry.get("last_issue") or 0), int(issue))
-        self._save()
