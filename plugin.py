@@ -2,9 +2,14 @@
 GitHub 订阅与解析插件。
 
 功能：
-1. 群里或私聊里贴 github.com 链接（仓库 / Issue / PR），机器人回一条解析卡片；
+1. 群里或私聊里贴 github.com 链接（仓库 / Issue / PR / Release），机器人回一条解析卡片；
 2. 发送「gh sub owner/repo」订阅仓库，「gh unsub owner/repo」取消，「gh list」查看；
 3. 后台按间隔轮询订阅仓库，有新 Release、新提交或新 Issue/PR 时主动推送到订阅所在的群或私聊。
+
+解析行为对齐 SuInk/Diana 的 GitHub 解析规则（用 Python 重新实现）：
+- 保留 owner 黑名单、名字字符集校验、.git 后缀剥离；
+- Issue/PR 走各自接口，PR 额外给出合并状态与改动规模；
+- Release 只读官方 API，并核对返回地址与请求的仓库、版本一致。
 
 约定：
 - 出网一律走 host.http_request，域名受清单白名单约束；
@@ -98,20 +103,59 @@ async def _safe_reply(host: Any, event: dict[str, Any], text: str, label: str) -
 
 async def _handle_link(host: Any, event: dict[str, Any], text: str) -> bool:
     """识别 GitHub 链接并回解析卡片；不是 GitHub 链接返回 False。"""
+    token = _text_config(host, "github_token", "")
+
+    # 先认 Release：它的路径最具体（/releases…），别被当成仓库链接。
+    release = common.find_release_target(text)
+    if release is not None:
+        try:
+            info = await github.fetch_release(
+                host,
+                release["owner"],
+                release["repo"],
+                token,
+                tag=release["tag"],
+                latest=release["mode"] == "latest",
+            )
+            await _safe_reply(
+                host, event, github.format_release_card(info), "解析 GitHub Release"
+            )
+        except GitHubError as error:
+            await _safe_reply(
+                host,
+                event,
+                f"解析失败：{error.message}" + (f"\n{error.hint}" if error.hint else ""),
+                "Release 解析失败提示",
+            )
+        except PluginCallError as error:
+            host.log(f"出网被拒或失败：{error}", "error")
+            await _safe_reply(host, event, "GitHub 服务暂时不可用，请稍后再试。", "服务提示")
+        return True
+
     target = common.find_github_target(text)
     if target is None:
         return False
-    token = _text_config(host, "github_token", "")
+    full_name = f"{target['owner']}/{target['repo']}"
     try:
-        if target["kind"] in ("issue", "pr"):
+        if target["kind"] == "pr":
+            info = await github.fetch_pull(
+                host, target["owner"], target["repo"], target["number"], token
+            )
+            await _safe_reply(
+                host, event, github.format_pull_card(info, full_name), "解析 GitHub PR"
+            )
+        elif target["kind"] == "issue":
             info = await github.fetch_issue(
                 host, target["owner"], target["repo"], target["number"], token
             )
-            info["full_name"] = f"{target['owner']}/{target['repo']}"
-            await _safe_reply(host, event, github.format_issue_card(info), "解析 GitHub")
+            await _safe_reply(
+                host, event, github.format_issue_card(info, full_name), "解析 GitHub Issue"
+            )
         else:
             info = await github.fetch_repo(host, target["owner"], target["repo"], token)
-            await _safe_reply(host, event, github.format_repo_card(info), "解析 GitHub")
+            await _safe_reply(
+                host, event, github.format_repo_card(info), "解析 GitHub 仓库"
+            )
     except GitHubError as error:
         await _safe_reply(
             host,
@@ -215,7 +259,7 @@ async def _calibrate(
 def _help_text(prefix: str) -> str:
     return (
         "GitHub 插件用法：\n"
-        f"- 贴 github.com 链接：自动解析仓库 / Issue / PR\n"
+        f"- 贴 github.com 链接：自动解析仓库 / Issue / PR / Release\n"
         f"- {prefix} sub owner/repo：订阅仓库更新\n"
         f"- {prefix} unsub owner/repo：取消订阅\n"
         f"- {prefix} list：查看本会话订阅\n"

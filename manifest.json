@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "cn.ucbk.github",
   "name": "GitHub 订阅与解析",
-  "version": "1.0.0",
-  "description": "在群聊或私聊里贴 GitHub 仓库 / Issue / PR / Release 链接，机器人直接回解析信息；也可以订阅仓库，有新 Release、新提交或新 Issue/PR 时主动推送到群。\n\n用法：\n1. 默认「粘贴链接即解析」，消息里带 github.com 链接就会回仓库/Issue/PR 信息；\n2. 订阅仓库：发送「gh sub owner/repo」；取消订阅「gh unsub owner/repo」；查看已订阅「gh list」；\n3. 订阅后机器人按间隔轮询，发现更新就发到订阅时所在的群或私聊；\n4. 可选填 GitHub Token 提高 API 限流额度，不填也能用（匿名 60 次/小时）。\n\n出网域名：api.github.com、github.com、uploads.github.com。图片与文件由 NapCat 自行拉取，不经过本插件出网。",
+  "version": "1.1.0",
+  "description": "在群聊或私聊里贴 GitHub 仓库 / Issue / PR / Release 链接，机器人直接回解析信息；也可以订阅仓库，有新 Release、新提交或新 Issue/PR 时主动推送到群。\n\n用法：\n1. 默认「粘贴链接即解析」，消息里带 github.com 链接就会回仓库/Issue/PR/Release 信息；\n2. 订阅仓库：发送「gh sub owner/repo」；取消订阅「gh unsub owner/repo」；查看已订阅「gh list」；\n3. 订阅后机器人按间隔轮询，发现更新就发到订阅时所在的群或私聊；\n4. 可选填 GitHub Token 提高 API 限流额度，不填也能用（匿名 60 次/小时）。\n\n解析规则与 SuInk/Diana 内置的 GitHub 解析行为一致（用 Python 重新实现）。\n\n出网域名：api.github.com、github.com、uploads.github.com。图片与文件由 NapCat 自行拉取，不经过本插件出网。",
   "author": {
     "name": "UCBK",
     "url": "https://www.ucbk.cn"
